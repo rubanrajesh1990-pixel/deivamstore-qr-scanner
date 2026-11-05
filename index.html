@@ -64,6 +64,7 @@
 <script>
   let scanner = null;
   let running = false;
+  let scanProcessed = false;
 
   async function loadCameras() {
     try {
@@ -100,13 +101,13 @@
   async function startScanner() {
     if (running) return;
 
+    scanProcessed = false;
+
     try {
       if (!scanner) scanner = new Html5Qrcode("reader");
 
       const cameraId = document.getElementById("cameraList").value;
-      if (!cameraId) {
-        await loadCameras();
-      }
+      if (!cameraId) await loadCameras();
 
       const selected = document.getElementById("cameraList").value;
       if (!selected) throw new Error("No camera selected");
@@ -114,10 +115,27 @@
       await scanner.start(
         selected,
         { fps: 10, qrbox: { width: 240, height: 240 } },
-        text => {
+        async text => {
+          if (scanProcessed) return;
+          scanProcessed = true;
+
           document.getElementById("result").textContent =
-            "Scanned Token: " + text;
-          stopScanner();
+            "QR scanned! Returning to Cashier Dashboard...";
+
+          await stopScanner();
+
+          if (window.opener && !window.opener.closed) {
+            window.opener.postMessage({
+              type: "DEIVAM_ORDER_TOKEN",
+              token: text
+            }, "*");
+
+            setTimeout(() => window.close(), 500);
+          } else {
+            document.getElementById("result").textContent =
+              "Scanned Token: " + text +
+              " — No Cashier Dashboard window found.";
+          }
         },
         () => {}
       );
