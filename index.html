@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -34,6 +33,7 @@
       color: white;
       cursor: pointer;
     }
+    button:disabled { opacity: .6; }
     select { border: 1px solid #ccc; background: white; }
     #reader { width: 100%; margin-top: 15px; }
     #result {
@@ -49,13 +49,13 @@
   <div class="container">
     <h2>Deivam Store – QR Scanner</h2>
 
-    <label>Select Camera</label>
+    <label for="cameraList">Select Camera</label>
     <select id="cameraList">
       <option value="">Detecting cameras...</option>
     </select>
 
-    <button onclick="startScanner()">Start Scanner</button>
-    <button onclick="stopScanner()">Stop Scanner</button>
+    <button id="startButton" onclick="startScanner()">Start Scanner</button>
+    <button id="stopButton" onclick="stopScanner()">Stop Scanner</button>
 
     <div id="reader"></div>
     <div id="result">Waiting for QR scan...</div>
@@ -66,13 +66,37 @@
   let running = false;
   let scanProcessed = false;
 
+  const DEFAULT_CASHIER_URL =
+    "https://script.google.com/macros/s/AKfycbwH0mmNSe55YfCEJoxWvTv3yMz-LsadTwi8jlTCmCzHJzI4ahWghcsUSI46Fm4B1_5I/exec?page=cashier";
+
+  function getCashierUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const suppliedReturnUrl = params.get("return");
+
+    // Only allow the known Deivam Store Apps Script deployment.
+    if (suppliedReturnUrl) {
+      try {
+        const parsed = new URL(suppliedReturnUrl);
+        if (
+          parsed.origin === "https://script.google.com" &&
+          parsed.pathname.includes("/macros/s/") &&
+          parsed.pathname.endsWith("/exec")
+        ) {
+          return parsed.origin + parsed.pathname + "?page=cashier";
+        }
+      } catch (e) {}
+    }
+
+    return DEFAULT_CASHIER_URL;
+  }
+
   async function loadCameras() {
     try {
       const cameras = await Html5Qrcode.getCameras();
       const list = document.getElementById("cameraList");
       list.innerHTML = "";
 
-      if (!cameras.length) {
+      if (!cameras || !cameras.length) {
         list.innerHTML = '<option value="">No camera found</option>';
         return;
       }
@@ -87,71 +111,109 @@
       const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       if (mobile) {
         const back = cameras.find(c =>
-          /back|rear|environment/i.test(c.label)
+          /back|rear|environment|wide/i.test(c.label)
         );
         if (back) list.value = back.id;
         else list.value = cameras[cameras.length - 1].id;
       }
     } catch (error) {
       document.getElementById("result").textContent =
-        "Camera permission error: " + error.message;
+        "Camera permission error: " + error.message +
+        ". Open this page directly in Safari and allow Camera access.";
     }
   }
 
   async function startScanner() {
-    if (running) return;
-
-    scanProcessed = false;
+    if (running || scanProcessed) return;
 
     try {
       if (!scanner) scanner = new Html5Qrcode("reader");
 
-      const cameraId = document.getElementById("cameraList").value;
-      if (!cameraId) await loadCameras();
+      let selected = document.getElementById("cameraList").value;
+      if (!selected) {
+        await loadCameras();
+        selected = document.getElementById("cameraList").value;
+      }
+      if (!selected) throw new Error("No camera selected.");
 
-      const selected = document.getElementById("cameraList").value;
-      if (!selected) throw new Error("No camera selected");
+      document.getElementById("startButton").disabled = true;
 
       await scanner.start(
         selected,
         { fps: 10, qrbox: { width: 240, height: 240 } },
-        async text => {
-          if (scanProcessed) return;
-          scanProcessed = true;
-
-          document.getElementById("result").textContent =
-            "QR scanned! Returning to Cashier Dashboard...";
-
-          await stopScanner();
-
-          if (window.opener && !window.opener.closed) {
-            window.opener.postMessage({
-              type: "DEIVAM_ORDER_TOKEN",
-              token: text
-            }, "*");
-
-            setTimeout(() => window.close(), 500);
-          } else {
-            document.getElementById("result").textContent =
-              "Scanned Token: " + text +
-              " — No Cashier Dashboard window found.";
-          }
-        },
+        onScanSuccess,
         () => {}
       );
 
       running = true;
+      document.getElementById("result").textContent = "Scanner is running. Point the camera at the customer QR code.";
     } catch (error) {
+      document.getElementById("startButton").disabled = false;
       document.getElementById("result").textContent =
         "Scanner error: " + error.message;
     }
   }
 
-  async function stopScanner() {
-    if (scanner && running) {
-      await scanner.stop();
+  async function onScanSuccess(text) {
+    if (scanProcessed) return;
+    scanProcessed = true;
+
+    document.getElementById("result").textContent =
+      "QR scanned successfully. Returning to Cashier Dashboard...";
+
+    try {
+      if (scanner && running) {
+        await scanner.stop();
+        running = false;
+      }
+    } catch (e) {
       running = false;
     }
+
+    const token = String(text || "").trim();
+    const validToken = /^[0-9a-f-]{36}-[0-9a-f-]{36}$/i.test(token);
+
+    if (!validToken) {
+      scanProcessed = false;
+      document.getElementById("startButton").disabled = false;
+      document.getElementById("result").textContent =
+        "Invalid Deivam Store order QR token. Please scan the customer order QR again.";
+      return;
+    }
+
+    // Android/desktop: use the existing opener message flow where available.
+    if (window.opener && !window.opener.closed) {
+      try {
+        window.opener.postMessage({
+          type: "DEIVAM_ORDER_TOKEN",
+          token: token
+        }, "https://script.google.com");
+
+        document.getElementById("result").textContent =
+          "QR sent to Cashier Dashboard. Returning...";
+        setTimeout(() => window.close(), 700);
+        return;
+      } catch (e) {
+        // Continue to the redirect fallback below.
+      }
+    }
+
+    // iPhone Safari: opener is often unavailable. Return to cashier with token.
+    const cashierUrl = getCashierUrl();
+    window.location.replace(
+      cashierUrl + "&token=" + encodeURIComponent(token)
+    );
+  }
+
+  async function stopScanner() {
+    if (scanner && running) {
+      try {
+        await scanner.stop();
+      } finally {
+        running = false;
+      }
+    }
+    document.getElementById("startButton").disabled = false;
   }
 
   loadCameras();
