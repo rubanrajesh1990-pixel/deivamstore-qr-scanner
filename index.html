@@ -1,0 +1,142 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deivam Store QR Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f2ed;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 550px;
+      margin: 25px auto;
+      background: white;
+      padding: 22px;
+      border-radius: 14px;
+      box-shadow: 0 3px 12px #0002;
+    }
+    h2 { color: #603b22; }
+    button, select {
+      width: 100%;
+      padding: 14px;
+      margin-top: 12px;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    button {
+      border: 0;
+      background: #603b22;
+      color: white;
+      cursor: pointer;
+    }
+    select { border: 1px solid #ccc; background: white; }
+    #reader { width: 100%; margin-top: 15px; }
+    #result {
+      margin-top: 18px;
+      padding: 14px;
+      background: #eee9e2;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Deivam Store – QR Scanner</h2>
+
+    <label>Select Camera</label>
+    <select id="cameraList">
+      <option value="">Detecting cameras...</option>
+    </select>
+
+    <button onclick="startScanner()">Start Scanner</button>
+    <button onclick="stopScanner()">Stop Scanner</button>
+
+    <div id="reader"></div>
+    <div id="result">Waiting for QR scan...</div>
+  </div>
+
+<script>
+  let scanner = null;
+  let running = false;
+
+  async function loadCameras() {
+    try {
+      const cameras = await Html5Qrcode.getCameras();
+      const list = document.getElementById("cameraList");
+      list.innerHTML = "";
+
+      if (!cameras.length) {
+        list.innerHTML = '<option value="">No camera found</option>';
+        return;
+      }
+
+      cameras.forEach((camera, index) => {
+        const option = document.createElement("option");
+        option.value = camera.id;
+        option.textContent = camera.label || "Camera " + (index + 1);
+        list.appendChild(option);
+      });
+
+      const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      if (mobile) {
+        const back = cameras.find(c =>
+          /back|rear|environment/i.test(c.label)
+        );
+        if (back) list.value = back.id;
+        else list.value = cameras[cameras.length - 1].id;
+      }
+    } catch (error) {
+      document.getElementById("result").textContent =
+        "Camera permission error: " + error.message;
+    }
+  }
+
+  async function startScanner() {
+    if (running) return;
+
+    try {
+      if (!scanner) scanner = new Html5Qrcode("reader");
+
+      const cameraId = document.getElementById("cameraList").value;
+      if (!cameraId) {
+        await loadCameras();
+      }
+
+      const selected = document.getElementById("cameraList").value;
+      if (!selected) throw new Error("No camera selected");
+
+      await scanner.start(
+        selected,
+        { fps: 10, qrbox: { width: 240, height: 240 } },
+        text => {
+          document.getElementById("result").textContent =
+            "Scanned Token: " + text;
+          stopScanner();
+        },
+        () => {}
+      );
+
+      running = true;
+    } catch (error) {
+      document.getElementById("result").textContent =
+        "Scanner error: " + error.message;
+    }
+  }
+
+  async function stopScanner() {
+    if (scanner && running) {
+      await scanner.stop();
+      running = false;
+    }
+  }
+
+  loadCameras();
+</script>
+</body>
+</html>
